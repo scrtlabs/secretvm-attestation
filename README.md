@@ -170,7 +170,61 @@ Verifies NVIDIA GPU attestation via NRAS.
 
 ## CLI usage
 
-### Python
+### Node.js CLI
+
+Install globally:
+
+```bash
+npm install -g secretvm-attestation
+```
+
+Or from the repo:
+
+```bash
+cd node
+npm install && npm run build
+npm install -g .
+```
+
+Then use from anywhere:
+
+```bash
+# Verify a Secret VM (CPU + GPU + TLS binding)
+secretvm-attestation --secretvm yellow-krill.vm.scrtlabs.com
+
+# Verify individual attestation quotes from files
+secretvm-attestation --tdx cpu_quote.txt
+secretvm-attestation --sev amd_cpu_quote.txt --product Genoa
+secretvm-attestation --gpu gpu_attest.txt
+
+# Auto-detect CPU quote type (TDX vs SEV-SNP)
+secretvm-attestation --cpu cpu_quote.txt
+
+# JSON output
+secretvm-attestation --secretvm yellow-krill.vm.scrtlabs.com --raw
+
+# A bare URL defaults to --secretvm
+secretvm-attestation yellow-krill.vm.scrtlabs.com
+```
+
+Full usage:
+
+```
+Usage: secretvm-attestation <command> <value> [--product NAME] [--raw]
+
+Commands:
+  --secretvm <url>     Verify a Secret VM (CPU + GPU + TLS binding)
+  --cpu <file>         Verify a CPU quote (auto-detect TDX vs SEV-SNP)
+  --tdx <file>         Verify an Intel TDX quote
+  --sev <file>         Verify an AMD SEV-SNP report
+  --gpu <file>         Verify an NVIDIA GPU attestation
+
+Options:
+  --product NAME       AMD product name (Genoa, Milan, Turin)
+  --raw                Output raw JSON result
+```
+
+### Python CLI
 
 ```bash
 cd python
@@ -178,16 +232,6 @@ pip install -e .
 python check_vm.py https://my-vm:29343
 python check_vm.py https://my-vm:29343 --raw     # JSON output
 python check_vm.py https://my-vm:29343 --product Genoa
-```
-
-### Node.js
-
-```bash
-cd node
-npm install && npm run build
-node dist/cli.js https://my-vm:29343
-node dist/cli.js https://my-vm:29343 --raw        # JSON output
-node dist/cli.js https://my-vm:29343 --product Genoa
 ```
 
 ## External services
