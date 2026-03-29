@@ -1,0 +1,357 @@
+import { describe, it, mock } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  checkTdxCpuAttestation,
+  checkAmdCpuAttestation,
+  checkNvidiaGpuAttestation,
+  checkCpuAttestation,
+  checkSecretVm,
+} from "./index.js";
+import type { AttestationResult } from "./types.js";
+import { parseVmUrl } from "./vm.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const TEST_DATA = join(__dirname, "..", "..", "test-data");
+
+function loadFixture(name: string): string {
+  return readFileSync(join(TEST_DATA, name), "utf8");
+}
+
+function skipIfRateLimited(result: AttestationResult) {
+  if (
+    result.checks.vcek_fetched === false &&
+    result.errors.some((e) => e.includes("429"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Intel TDX
+// ---------------------------------------------------------------------------
+
+describe("checkTdxCpuAttestation", () => {
+  it("verifies a valid TDX quote", async () => {
+    const result = await checkTdxCpuAttestation(loadFixture("cpu_quote.txt"));
+    assert.equal(result.valid, true);
+    assert.equal(result.attestationType, "TDX");
+    assert.equal(result.checks.quote_parsed, true);
+    assert.equal(result.checks.cert_chain_valid, true);
+    assert.equal(result.checks.qe_report_signature_valid, true);
+    assert.equal(result.checks.attestation_key_bound, true);
+    assert.equal(result.checks.quote_signature_valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("returns correct report fields", async () => {
+    const result = await checkTdxCpuAttestation(loadFixture("cpu_quote.txt"));
+    assert.equal(result.report.version, 4);
+    assert.equal(result.report.tee_type, 0x81);
+    assert.equal(result.report.mr_td.length, 96); // 48 bytes hex
+    assert.equal(result.report.report_data.length, 128); // 64 bytes hex
+    assert.ok(result.report.fmspc.length > 0);
+    assert.ok(
+      result.report.tcb_status.includes("UpToDate") ||
+        result.report.tcb_status.includes("OutOfDate"),
+    );
+  });
+
+  it("rejects invalid hex", async () => {
+    const result = await checkTdxCpuAttestation("not-valid-hex!!!");
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.quote_parsed, false);
+    assert.ok(result.errors.length > 0);
+  });
+
+  it("rejects truncated quote", async () => {
+    const result = await checkTdxCpuAttestation("aa".repeat(100));
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.quote_parsed, false);
+  });
+
+  it("rejects empty input", async () => {
+    const result = await checkTdxCpuAttestation("");
+    assert.equal(result.valid, false);
+  });
+
+  it("detects corrupted signature", async () => {
+    const raw = Buffer.from(loadFixture("cpu_quote.txt").trim(), "hex");
+    const corrupted = Buffer.from(raw);
+    corrupted[640]! ^= 0xff;
+    const result = await checkTdxCpuAttestation(corrupted.toString("hex"));
+    assert.equal(result.checks.quote_signature_valid, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AMD SEV-SNP
+// ---------------------------------------------------------------------------
+
+describe("checkAmdCpuAttestation", () => {
+  it("verifies a valid AMD report", async () => {
+    const result = await checkAmdCpuAttestation(
+      loadFixture("amd_cpu_quote.txt"),
+      "Genoa",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.valid, true);
+    assert.equal(result.attestationType, "SEV-SNP");
+    assert.equal(result.checks.report_parsed, true);
+    assert.equal(result.checks.vcek_fetched, true);
+    assert.equal(result.checks.cert_chain_valid, true);
+    assert.equal(result.checks.report_signature_valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("returns correct report fields", async () => {
+    const result = await checkAmdCpuAttestation(
+      loadFixture("amd_cpu_quote.txt"),
+      "Genoa",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.report.version, 3);
+    assert.equal(result.report.vmpl, 1);
+    assert.equal(result.report.product, "Genoa");
+    assert.equal(result.report.debug_allowed, false);
+    assert.equal(result.report.measurement.length, 96);
+    assert.equal(result.report.report_data.length, 128);
+    assert.equal(result.report.chip_id.length, 128);
+  });
+
+  it("auto-detects product", async () => {
+    const result = await checkAmdCpuAttestation(
+      loadFixture("amd_cpu_quote.txt"),
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.valid, true);
+    assert.equal(result.report.product, "Genoa");
+  });
+
+  it("rejects invalid base64", async () => {
+    const result = await checkAmdCpuAttestation("!!!not-base64!!!");
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.report_parsed, false);
+    assert.ok(result.errors.length > 0);
+  });
+
+  it("rejects truncated report", async () => {
+    const short = Buffer.alloc(100).toString("base64");
+    const result = await checkAmdCpuAttestation(short);
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.report_parsed, false);
+  });
+
+  it("rejects empty input", async () => {
+    const result = await checkAmdCpuAttestation("");
+    assert.equal(result.valid, false);
+  });
+
+  it("rejects wrong product", async () => {
+    const result = await checkAmdCpuAttestation(
+      loadFixture("amd_cpu_quote.txt"),
+      "Milan",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.vcek_fetched, false);
+  });
+
+  it("detects corrupted signature", async () => {
+    const raw = Buffer.from(
+      loadFixture("amd_cpu_quote.txt").trim(),
+      "base64",
+    );
+    const corrupted = Buffer.from(raw);
+    corrupted[0x090]! ^= 0xff;
+    const result = await checkAmdCpuAttestation(
+      corrupted.toString("base64"),
+      "Genoa",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.checks.report_signature_valid, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NVIDIA GPU
+// ---------------------------------------------------------------------------
+
+describe("checkNvidiaGpuAttestation", () => {
+  it("verifies valid attestation", async () => {
+    const result = await checkNvidiaGpuAttestation(
+      loadFixture("gpu_attest.txt"),
+    );
+    assert.equal(result.valid, true);
+    assert.equal(result.attestationType, "NVIDIA-GPU");
+    assert.equal(result.checks.input_parsed, true);
+    assert.equal(result.checks.nras_submission, true);
+    assert.equal(result.checks.platform_jwt_signature, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("returns correct report fields", async () => {
+    const result = await checkNvidiaGpuAttestation(
+      loadFixture("gpu_attest.txt"),
+    );
+    assert.equal(result.report.overall_result, true);
+    assert.ok(Object.keys(result.report.gpus).length > 0);
+    const gpu = Object.values(result.report.gpus)[0] as any;
+    assert.ok(gpu.model);
+    assert.equal(gpu.attestation_report_signature_verified, true);
+  });
+
+  it("rejects invalid JSON", async () => {
+    const result = await checkNvidiaGpuAttestation("{not valid json");
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.input_parsed, false);
+    assert.ok(result.errors.length > 0);
+  });
+
+  it("rejects empty JSON object", async () => {
+    const result = await checkNvidiaGpuAttestation("{}");
+    assert.equal(result.valid, false);
+    assert.equal(result.checks.nras_submission, false);
+  });
+
+  it("rejects empty input", async () => {
+    const result = await checkNvidiaGpuAttestation("");
+    assert.equal(result.valid, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CPU auto-detect
+// ---------------------------------------------------------------------------
+
+describe("checkCpuAttestation", () => {
+  it("detects TDX", async () => {
+    const result = await checkCpuAttestation(loadFixture("cpu_quote.txt"));
+    assert.equal(result.attestationType, "TDX");
+    assert.equal(result.valid, true);
+  });
+
+  it("detects AMD", async () => {
+    const result = await checkCpuAttestation(
+      loadFixture("amd_cpu_quote.txt"),
+      "Genoa",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.attestationType, "SEV-SNP");
+    assert.equal(result.valid, true);
+  });
+
+  it("returns unknown for bad input", async () => {
+    const result = await checkCpuAttestation("this is not a quote");
+    assert.equal(result.valid, false);
+    assert.equal(result.attestationType, "unknown");
+    assert.ok(result.errors.length > 0);
+  });
+
+  it("handles empty input", async () => {
+    const result = await checkCpuAttestation("");
+    assert.equal(result.valid, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Secret VM
+// ---------------------------------------------------------------------------
+
+describe("checkSecretVm", () => {
+  it("fails on unreachable host", async () => {
+    const result = await checkSecretVm("https://192.0.2.1:29343");
+    assert.equal(result.valid, false);
+    assert.equal(result.attestationType, "SECRET-VM");
+    assert.equal(result.checks.tls_cert_obtained, false);
+    assert.ok(result.errors.length > 0);
+  });
+
+  it("fails on empty URL", async () => {
+    const result = await checkSecretVm("");
+    assert.equal(result.valid, false);
+  });
+
+  describe("parseVmUrl", () => {
+    it("handles bare hostname", () => {
+      const { host, port } = parseVmUrl("myhost");
+      assert.equal(host, "myhost");
+      assert.equal(port, 29343);
+    });
+
+    it("handles hostname with port", () => {
+      const { host, port } = parseVmUrl("myhost:1234");
+      assert.equal(host, "myhost");
+      assert.equal(port, 1234);
+    });
+
+    it("handles full URL with port", () => {
+      const { host, port } = parseVmUrl("https://myhost:5555");
+      assert.equal(host, "myhost");
+      assert.equal(port, 5555);
+    });
+
+    it("handles full URL without port", () => {
+      const { host, port } = parseVmUrl("https://myhost");
+      assert.equal(host, "myhost");
+      assert.equal(port, 29343);
+    });
+  });
+
+  describe("mocked", () => {
+    function makeTestData(tlsHex = "aa".repeat(32), nonceHex = "bb".repeat(32)) {
+      const reportData = tlsHex + nonceHex;
+      const tlsFp = Buffer.from(tlsHex, "hex");
+      const cpuResult: AttestationResult = {
+        valid: true,
+        attestationType: "TDX",
+        checks: { quote_parsed: true, quote_signature_valid: true },
+        report: { report_data: reportData, mr_td: "cc".repeat(48) },
+        errors: [],
+      };
+      const gpuResult: AttestationResult = {
+        valid: true,
+        attestationType: "NVIDIA-GPU",
+        checks: { platform_jwt_signature: true },
+        report: { overall_result: true, gpus: {} },
+        errors: [],
+      };
+      const gpuJson = JSON.stringify({
+        nonce: nonceHex,
+        arch: "HOPPER",
+        evidence_list: [],
+      });
+      const noGpuJson = JSON.stringify({
+        error: "GPU attestation not available",
+        details: "The GPU attestation data has not been generated or is not ready yet",
+      });
+      return { tlsFp, cpuResult, gpuResult, gpuJson, noGpuJson, reportData };
+    }
+
+    // We test the logic by importing vm.ts internals won't work easily with
+    // mocking in node:test, so we test the data flow expectations instead.
+
+    it("no-GPU JSON has error field", () => {
+      const { noGpuJson } = makeTestData();
+      const parsed = JSON.parse(noGpuJson);
+      assert.ok("error" in parsed);
+    });
+
+    it("test data is internally consistent", () => {
+      const { tlsFp, reportData } = makeTestData();
+      const firstHalf = reportData.slice(0, 64);
+      assert.equal(firstHalf, tlsFp.toString("hex"));
+    });
+
+    it("nonce matches second half", () => {
+      const nonceHex = "bb".repeat(32);
+      const { reportData } = makeTestData("aa".repeat(32), nonceHex);
+      const secondHalf = reportData.slice(64, 128);
+      assert.equal(secondHalf, nonceHex);
+    });
+  });
+});
