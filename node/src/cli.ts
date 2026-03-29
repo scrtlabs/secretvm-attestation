@@ -1,27 +1,112 @@
 #!/usr/bin/env node
-import { checkSecretVm } from "./index.js";
+import { readFileSync } from "node:fs";
+import {
+  checkSecretVm,
+  checkCpuAttestation,
+  checkTdxCpuAttestation,
+  checkAmdCpuAttestation,
+  checkNvidiaGpuAttestation,
+} from "./index.js";
+import type { AttestationResult } from "./types.js";
 
 const args = process.argv.slice(2);
-const url = args.find((a) => !a.startsWith("--"));
-const product = args.includes("--product")
-  ? args[args.indexOf("--product") + 1] ?? ""
-  : "";
-const raw = args.includes("--raw");
 
-if (!url) {
-  console.log(`Usage: check-vm <url> [--product NAME] [--raw]`);
-  console.log(`  e.g. check-vm https://my-vm:29343`);
-  process.exit(1);
+function getFlag(name: string): boolean {
+  return args.includes(name);
 }
 
-const result = await checkSecretVm(url, product);
+function getFlagValue(name: string): string | undefined {
+  const idx = args.indexOf(name);
+  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
+  return undefined;
+}
 
+function getPositional(): string | undefined {
+  return args.find((a) => !a.startsWith("--"));
+}
+
+const raw = getFlag("--raw");
+const product = getFlagValue("--product") ?? "";
+
+const USAGE = `Usage: secretvm-attestation <command> <value> [--product NAME] [--raw]
+
+Commands:
+  --secretvm <url>     Verify a Secret VM (CPU + GPU + TLS binding)
+  --cpu <file>         Verify a CPU quote (auto-detect TDX vs SEV-SNP)
+  --tdx <file>         Verify an Intel TDX quote
+  --sev <file>         Verify an AMD SEV-SNP report
+  --gpu <file>         Verify an NVIDIA GPU attestation
+
+Options:
+  --product NAME       AMD product name (Genoa, Milan, Turin)
+  --raw                Output raw JSON result
+
+Examples:
+  secretvm-attestation --secretvm yellow-krill.vm.scrtlabs.com
+  secretvm-attestation --tdx cpu_quote.txt
+  secretvm-attestation --sev amd_cpu_quote.txt --product Genoa
+  secretvm-attestation --gpu gpu_attest.txt
+  secretvm-attestation --cpu cpu_quote.txt --raw`;
+
+// Determine which command to run
+let result: AttestationResult;
+
+if (getFlag("--secretvm")) {
+  const url = getFlagValue("--secretvm") ?? getPositional();
+  if (!url) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Checking attestation for ${url} ...\n`);
+  result = await checkSecretVm(url, product);
+} else if (getFlag("--cpu")) {
+  const file = getFlagValue("--cpu") ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Verifying CPU quote from ${file} ...\n`);
+  result = await checkCpuAttestation(readFileSync(file, "utf8"), product);
+} else if (getFlag("--tdx")) {
+  const file = getFlagValue("--tdx") ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Verifying TDX quote from ${file} ...\n`);
+  result = await checkTdxCpuAttestation(readFileSync(file, "utf8"));
+} else if (getFlag("--sev")) {
+  const file = getFlagValue("--sev") ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Verifying AMD SEV-SNP report from ${file} ...\n`);
+  result = await checkAmdCpuAttestation(readFileSync(file, "utf8"), product);
+} else if (getFlag("--gpu")) {
+  const file = getFlagValue("--gpu") ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Verifying NVIDIA GPU attestation from ${file} ...\n`);
+  result = await checkNvidiaGpuAttestation(readFileSync(file, "utf8"));
+} else {
+  // Legacy: bare URL defaults to --secretvm
+  const url = getPositional();
+  if (!url) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Checking attestation for ${url} ...\n`);
+  result = await checkSecretVm(url, product);
+}
+
+// Output
 if (raw) {
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.valid ? 0 : 1);
 }
-
-console.log(`Checking attestation for ${url} ...\n`);
 
 console.log("Checks:");
 for (const [name, passed] of Object.entries(result.checks)) {
@@ -34,17 +119,24 @@ for (const [name, passed] of Object.entries(result.checks)) {
 }
 
 const report = result.report;
+
+// Secret VM specific fields
 if (report.cpu_type) console.log(`\nCPU type: ${report.cpu_type}`);
 if (report.tls_fingerprint) console.log(`TLS fingerprint: ${report.tls_fingerprint}`);
 
-const cpu = report.cpu ?? {};
+// CPU fields (direct or nested under cpu)
+const cpu = report.cpu ?? report;
 if (cpu.report_data) console.log(`Report data: ${cpu.report_data}`);
 if (cpu.measurement) console.log(`Measurement: ${cpu.measurement}`);
 if (cpu.mr_td) console.log(`MR TD: ${cpu.mr_td}`);
 if (cpu.tcb_status) console.log(`TCB status: ${cpu.tcb_status}`);
 if (cpu.product) console.log(`AMD product: ${cpu.product}`);
+if (cpu.chip_id) console.log(`Chip ID: ${cpu.chip_id}`);
+if (cpu.fmspc) console.log(`FMSPC: ${cpu.fmspc}`);
 
-const gpu = report.gpu ?? {};
+// GPU fields (direct or nested under gpu)
+const gpu = report.gpu ?? report;
+if (gpu.overall_result !== undefined) console.log(`\nGPU overall result: ${gpu.overall_result}`);
 if (gpu.gpus) {
   for (const [gpuId, info] of Object.entries<any>(gpu.gpus)) {
     console.log(`\n${gpuId}:`);
