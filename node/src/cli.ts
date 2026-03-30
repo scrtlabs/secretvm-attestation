@@ -28,7 +28,7 @@ function getPositional(): string | undefined {
 const raw = getFlag("--raw");
 const product = getFlagValue("--product") ?? "";
 
-const USAGE = `Usage: secretvm-attestation <command> <value> [--product NAME] [--raw]
+const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--raw]
 
 Commands:
   --secretvm <url>     Verify a Secret VM (CPU + GPU + TLS binding)
@@ -42,11 +42,11 @@ Options:
   --raw                Output raw JSON result
 
 Examples:
-  secretvm-attestation --secretvm yellow-krill.vm.scrtlabs.com
-  secretvm-attestation --tdx cpu_quote.txt
-  secretvm-attestation --sev amd_cpu_quote.txt --product Genoa
-  secretvm-attestation --gpu gpu_attest.txt
-  secretvm-attestation --cpu cpu_quote.txt --raw`;
+  secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
+  secretvm-verify --tdx cpu_quote.txt
+  secretvm-verify --sev amd_cpu_quote.txt --product Genoa
+  secretvm-verify --gpu gpu_attest.txt
+  secretvm-verify --cpu cpu_quote.txt --raw`;
 
 // Determine which command to run
 let result: AttestationResult;

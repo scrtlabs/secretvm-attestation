@@ -1,5 +1,5 @@
 {
-  "name": "secretvm-attestation",
+  "name": "secretvm-verify",
   "version": "0.1.0",
   "description": "Attestation verification for Intel TDX, AMD SEV-SNP, and NVIDIA GPU",
   "type": "module",
@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "secretvm-attestation": "dist/cli.js"
+    "secretvm-verify": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",

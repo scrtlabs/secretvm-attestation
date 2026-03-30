@@ -1,4 +1,4 @@
-# secretvm-attestation
+# secretvm-verify
 
 Attestation verification SDK for confidential computing environments. Verifies Intel TDX, AMD SEV-SNP, and NVIDIA GPU attestation quotes, with end-to-end Secret VM verification that validates CPU attestation, GPU attestation, and the cryptographic bindings between them.
 
@@ -18,13 +18,13 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 ### Python
 
 ```bash
-pip install secretvm-attestation
+pip install secretvm-verify
 ```
 
 ### Node.js
 
 ```bash
-npm install secretvm-attestation
+npm install secretvm-verify
 ```
 
 ## Quick start
@@ -50,7 +50,7 @@ print(result.errors)          # [] if no errors
 **Node.js / TypeScript:**
 
 ```typescript
-import { checkSecretVm } from 'secretvm-attestation';
+import { checkSecretVm } from 'secretvm-verify';
 
 const result = await checkSecretVm('my-vm.example.com');
 
@@ -80,7 +80,7 @@ print(result.valid)
 **Node.js:**
 
 ```typescript
-import { checkCpuAttestation } from 'secretvm-attestation';
+import { checkCpuAttestation } from 'secretvm-verify';
 import { readFileSync } from 'fs';
 
 const result = await checkCpuAttestation(readFileSync('cpu_quote.txt', 'utf8'));
@@ -175,7 +175,7 @@ Verifies NVIDIA GPU attestation via NRAS.
 Install globally:
 
 ```bash
-npm install -g secretvm-attestation
+npm install -g secretvm-verify
 ```
 
 Or from the repo:
@@ -190,27 +190,27 @@ Then use from anywhere:
 
 ```bash
 # Verify a Secret VM (CPU + GPU + TLS binding)
-secretvm-attestation --secretvm yellow-krill.vm.scrtlabs.com
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
 
 # Verify individual attestation quotes from files
-secretvm-attestation --tdx cpu_quote.txt
-secretvm-attestation --sev amd_cpu_quote.txt --product Genoa
-secretvm-attestation --gpu gpu_attest.txt
+secretvm-verify --tdx cpu_quote.txt
+secretvm-verify --sev amd_cpu_quote.txt --product Genoa
+secretvm-verify --gpu gpu_attest.txt
 
 # Auto-detect CPU quote type (TDX vs SEV-SNP)
-secretvm-attestation --cpu cpu_quote.txt
+secretvm-verify --cpu cpu_quote.txt
 
 # JSON output
-secretvm-attestation --secretvm yellow-krill.vm.scrtlabs.com --raw
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw
 
 # A bare URL defaults to --secretvm
-secretvm-attestation yellow-krill.vm.scrtlabs.com
+secretvm-verify yellow-krill.vm.scrtlabs.com
 ```
 
 Full usage:
 
 ```
-Usage: secretvm-attestation <command> <value> [--product NAME] [--raw]
+Usage: secretvm-verify <command> <value> [--product NAME] [--raw]
 
 Commands:
   --secretvm <url>     Verify a Secret VM (CPU + GPU + TLS binding)
@@ -249,7 +249,7 @@ The library contacts these services during verification:
 ## Project structure
 
 ```
-secretvm-attestation/
+secretvm-verify/
   python/                     # PyPI package
     pyproject.toml
     src/secretai/attestation/
