@@ -19,6 +19,9 @@ from secretvm.verify import (
     check_nvidia_gpu_attestation,
     check_secret_vm,
     check_tdx_cpu_attestation,
+    resolve_secretvm_version,
+    verify_tdx_workload,
+    format_workload_result,
 )
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent / "test-data"
@@ -438,3 +441,125 @@ class TestSecretVm:
 
         assert result.valid is False
         assert result.checks["gpu_attestation_valid"] is False
+
+
+# ---------------------------------------------------------------------------
+# Workload verification (resolve_secretvm_version + verify_tdx_workload)
+# ---------------------------------------------------------------------------
+
+DOCKER_QUOTE_FILE = FIXTURES_DIR / "tdx_cpu_docker_check_quote.txt"
+DOCKER_COMPOSE_FILE = FIXTURES_DIR / "tdx_cpu_docker_check_compose.yaml"
+
+
+@pytest.fixture
+def docker_quote():
+    return DOCKER_QUOTE_FILE.read_text()
+
+
+@pytest.fixture
+def docker_compose():
+    return DOCKER_COMPOSE_FILE.read_text()
+
+
+class TestResolveSecretvmVersion:
+    def test_resolves_known_quote(self, docker_quote):
+        v = resolve_secretvm_version(docker_quote)
+        assert v is not None
+        assert v["template_name"] == "small"
+        assert v["artifacts_ver"].startswith("v0.0.")
+
+    def test_returns_none_for_unknown_mrtd(self, docker_quote):
+        raw = bytearray(bytes.fromhex(docker_quote.strip()))
+        # MRTD is at offset 48+136=184, length 48 bytes -- flip first byte
+        raw[184] ^= 0xFF
+        v = resolve_secretvm_version(bytes(raw).hex())
+        assert v is None
+
+    def test_returns_none_for_garbage_input(self):
+        v = resolve_secretvm_version("not-a-hex-quote!!!")
+        assert v is None
+
+
+class TestVerifyTdxWorkload:
+    def test_authentic_match(self, docker_quote, docker_compose):
+        r = verify_tdx_workload(docker_quote, docker_compose)
+        assert r.status == "authentic_match"
+        assert r.template_name == "small"
+        assert r.artifacts_ver is not None
+        assert r.artifacts_ver.startswith("v0.0.")
+        assert r.env == "prod"
+
+    def test_format_authentic_match(self, docker_quote, docker_compose):
+        r = verify_tdx_workload(docker_quote, docker_compose)
+        out = format_workload_result(r)
+        assert "Confirmed" in out
+        assert "docker-compose" in out
+
+    def test_authentic_mismatch_when_compose_tampered(self, docker_quote, docker_compose):
+        tampered = docker_compose + "\n# tampered"
+        r = verify_tdx_workload(docker_quote, tampered)
+        assert r.status == "authentic_mismatch"
+        # Version info must still be populated even on mismatch
+        assert r.template_name is not None
+        assert r.artifacts_ver is not None
+
+    def test_format_authentic_mismatch(self, docker_quote, docker_compose):
+        r = verify_tdx_workload(docker_quote, docker_compose + "\n# bad")
+        out = format_workload_result(r)
+        assert "Confirmed" in out  # SecretVM line is present
+        assert "does not match" in out
+
+    def test_not_authentic_for_unknown_mrtd(self, docker_quote, docker_compose):
+        raw = bytearray(bytes.fromhex(docker_quote.strip()))
+        raw[184] ^= 0xFF  # corrupt MRTD
+        r = verify_tdx_workload(bytes(raw).hex(), docker_compose)
+        assert r.status == "not_authentic"
+
+    def test_not_authentic_for_garbage_input(self, docker_compose):
+        r = verify_tdx_workload("not-hex-at-all!!!", docker_compose)
+        assert r.status == "not_authentic"
+
+    def test_format_not_authentic(self):
+        from secretai.attestation import WorkloadResult
+        r = WorkloadResult(status="not_authentic")
+        out = format_workload_result(r)
+        assert "authentic SecretVM" in out
+
+
+class TestCheckTdxCpuAttestationDockerQuote:
+    """Crypto verification using the docker-check quote file."""
+
+    def test_valid_quote_passes_all_checks(self, docker_quote):
+        result = check_tdx_cpu_attestation(docker_quote)
+        assert result.valid is True
+        assert result.checks["quote_parsed"] is True
+        assert result.checks["cert_chain_valid"] is True
+        assert result.checks["qe_report_signature_valid"] is True
+        assert result.checks["attestation_key_bound"] is True
+        assert result.checks["quote_signature_valid"] is True
+        assert result.errors == []
+
+    def test_corrupted_quote_fails_signature(self, docker_quote):
+        raw = bytearray(bytes.fromhex(docker_quote.strip()))
+        # Flip a byte inside the ECDSA quote signature area (offset 636)
+        raw[636] ^= 0xFF
+        result = check_tdx_cpu_attestation(bytes(raw).hex())
+        assert result.checks["quote_signature_valid"] is False
+        assert result.valid is False
+
+    def test_invalid_hex_fails_parse(self):
+        result = check_tdx_cpu_attestation("not-valid-hex!!!")
+        assert result.valid is False
+        assert result.checks["quote_parsed"] is False
+
+    def test_truncated_quote_fails_parse(self):
+        result = check_tdx_cpu_attestation("aa" * 100)
+        assert result.valid is False
+        assert result.checks["quote_parsed"] is False
+
+    def test_corrupted_attestation_crypto_fails(self, docker_quote):
+        """A cryptographically forged quote must be rejected."""
+        raw = bytearray(bytes.fromhex(docker_quote.strip()))
+        raw[636] ^= 0xFF
+        crypto_result = check_tdx_cpu_attestation(bytes(raw).hex())
+        assert crypto_result.valid is False

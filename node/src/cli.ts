@@ -6,6 +6,9 @@ import {
   checkTdxCpuAttestation,
   checkAmdCpuAttestation,
   checkNvidiaGpuAttestation,
+  resolveSecretVmVersion,
+  verifyTdxWorkload,
+  formatWorkloadResult,
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
 
@@ -31,11 +34,14 @@ const product = getFlagValue("--product") ?? "";
 const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--raw]
 
 Commands:
-  --secretvm <url>     Verify a Secret VM (CPU + GPU + TLS binding)
-  --cpu <file>         Verify a CPU quote (auto-detect TDX vs SEV-SNP)
-  --tdx <file>         Verify an Intel TDX quote
-  --sev <file>         Verify an AMD SEV-SNP report
-  --gpu <file>         Verify an NVIDIA GPU attestation
+  --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
+  --cpu <file>                      Verify a CPU quote (auto-detect TDX vs SEV-SNP)
+  --tdx <file>                      Verify an Intel TDX quote
+  --sev <file>                      Verify an AMD SEV-SNP report
+  --gpu <file>                      Verify an NVIDIA GPU attestation
+  --resolve-version <file>          Resolve SecretVM version from TDX quote
+  --verify-workload <file> --compose <file>
+                                    Verify TDX workload against a docker-compose.yaml
 
 Options:
   --product NAME       AMD product name (Genoa, Milan, Turin)
@@ -46,7 +52,9 @@ Examples:
   secretvm-verify --tdx cpu_quote.txt
   secretvm-verify --sev amd_cpu_quote.txt --product Genoa
   secretvm-verify --gpu gpu_attest.txt
-  secretvm-verify --cpu cpu_quote.txt --raw`;
+  secretvm-verify --cpu cpu_quote.txt --raw
+  secretvm-verify --resolve-version cpu_quote.txt
+  secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml`;
 
 // Determine which command to run
 let result: AttestationResult;
@@ -91,6 +99,54 @@ if (getFlag("--secretvm")) {
   }
   if (!raw) console.log(`Verifying NVIDIA GPU attestation from ${file} ...\n`);
   result = await checkNvidiaGpuAttestation(readFileSync(file, "utf8"));
+} else if (getFlag("--resolve-version")) {
+  const file = getFlagValue("--resolve-version") ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  const quoteHex = readFileSync(file, "utf8");
+  const quoteResult = await checkTdxCpuAttestation(quoteHex);
+  const version = resolveSecretVmVersion(quoteHex);
+  if (raw) {
+    console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+    process.exit(quoteResult.valid && !!version ? 0 : 1);
+  }
+  if (!quoteResult.valid) {
+    console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+    process.exit(1);
+  }
+  if (version) {
+    console.log(`Template: ${version.template_name}`);
+    console.log(`Version:  ${version.artifacts_ver}`);
+  } else {
+    console.log("No matching SecretVM version found in registry.");
+  }
+  process.exit(!!version ? 0 : 1);
+} else if (getFlag("--verify-workload")) {
+  const quoteFile = getFlagValue("--verify-workload") ?? getPositional();
+  const composeFile = getFlagValue("--compose");
+  if (!quoteFile || !composeFile) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  const quoteHex = readFileSync(quoteFile, "utf8");
+  const quoteResult = await checkTdxCpuAttestation(quoteHex);
+  if (raw) {
+    const workloadResult = verifyTdxWorkload(quoteHex, readFileSync(composeFile, "utf8"));
+    console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
+    process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+  }
+  if (!quoteResult.valid) {
+    console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+    process.exit(1);
+  }
+  const workloadResult = verifyTdxWorkload(
+    quoteHex,
+    readFileSync(composeFile, "utf8"),
+  );
+  console.log(formatWorkloadResult(workloadResult));
+  process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
 } else {
   // Legacy: bare URL defaults to --secretvm
   const url = getPositional();

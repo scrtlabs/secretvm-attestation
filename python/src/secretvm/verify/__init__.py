@@ -1022,3 +1022,222 @@ def check_secret_vm(url: str, product: str = "") -> AttestationResult:
         valid=valid, attestation_type="SECRET-VM",
         checks=checks, report=report, errors=errors,
     )
+
+
+# ===========================================================================
+#
+#  SECRETVM WORKLOAD VERIFICATION
+#
+# ===========================================================================
+
+import csv
+import yaml as _yaml
+
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WorkloadResult:
+    """Result of a SecretVM workload verification."""
+    status: str  # "authentic_match" | "authentic_mismatch" | "not_authentic"
+    template_name: Optional[str] = None
+    vm_type: Optional[str] = None
+    artifacts_ver: Optional[str] = None
+    env: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# RTMR replay
+# ---------------------------------------------------------------------------
+
+def _replay_rtmr(history: list) -> str:
+    """SHA-384 RTMR accumulator — mirrors portal's replayRTMR logic."""
+    if not history:
+        return "00" * 48
+
+    mr = bytearray(48)
+    for entry in history:
+        entry_bytes = bytes.fromhex(entry)
+        if len(entry_bytes) < 48:
+            entry_bytes = entry_bytes + bytes(48 - len(entry_bytes))
+        combined = bytes(mr) + entry_bytes
+        digest = hashlib.sha384(combined).digest()
+        mr = bytearray(digest[:48])
+
+    return bytes(mr).hex()
+
+
+def _calculate_rtmr3(docker_compose: str | bytes, rootfs_data: str) -> str:
+    """Calculate expected RTMR3 from docker-compose content and rootfs_data.
+
+    Hashes the raw file bytes directly (no YAML normalization), matching
+    the portal's Buffer path in calculateRTMR3.
+    """
+    compose_bytes = docker_compose if isinstance(docker_compose, bytes) else docker_compose.encode("utf-8")
+    sha256_hex = hashlib.sha256(compose_bytes).hexdigest()
+    rootfs_hex = rootfs_data.lower().lstrip("0x")
+    return _replay_rtmr([sha256_hex, rootfs_hex])
+
+
+# ---------------------------------------------------------------------------
+# Registry loader
+# ---------------------------------------------------------------------------
+
+_tdx_registry_cache: Optional[list] = None
+
+
+def _load_tdx_registry() -> list:
+    global _tdx_registry_cache
+    if _tdx_registry_cache is not None:
+        return _tdx_registry_cache
+
+    csv_path = Path(__file__).parents[4] / "artifacts_registry" / "tdx.csv"
+    rows = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append({k: v.strip().lower() for k, v in row.items()})
+    _tdx_registry_cache = rows
+    return rows
+
+
+def _find_matching_artifacts(mrtd: str, rtmr0: str, rtmr1: str, rtmr2: str) -> list:
+    m = mrtd.lower().lstrip("0x")
+    r0 = rtmr0.lower().lstrip("0x")
+    r1 = rtmr1.lower().lstrip("0x")
+    r2 = rtmr2.lower().lstrip("0x")
+    return [
+        e for e in _load_tdx_registry()
+        if e["mrtd"] == m and e["rtmr0"] == r0 and e["rtmr1"] == r1 and e["rtmr2"] == r2
+    ]
+
+
+def _parse_semver(ver: str):
+    """Return (major, minor, patch, pre) tuple for sorting."""
+    clean = ver.lstrip("v")
+    dash = clean.find("-")
+    if dash >= 0:
+        core, pre = clean[:dash], clean[dash + 1:]
+    else:
+        core, pre = clean, ""
+    parts = core.split(".")
+    try:
+        major, minor, patch = int(parts[0] or 0), int(parts[1] if len(parts) > 1 else 0), int(parts[2] if len(parts) > 2 else 0)
+    except ValueError:
+        major, minor, patch = 0, 0, 0
+    return major, minor, patch, pre
+
+
+def _pick_newest_version(entries: list) -> Optional[dict]:
+    if not entries:
+        return None
+
+    def sort_key(e):
+        major, minor, patch, pre = _parse_semver(e.get("artifacts_ver", ""))
+        # release ("") beats pre-release; negate numeric parts for descending sort
+        return (-major, -minor, -patch, 0 if pre == "" else 1, pre)
+
+    return sorted(entries, key=sort_key)[0]
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def resolve_secretvm_version(data: str) -> Optional[dict]:
+    """Given a TDX quote (hex string), return matching SecretVM version info.
+
+    Returns a dict with ``template_name`` and ``artifacts_ver``, or ``None``
+    when the quote is not from a known SecretVM.
+    """
+    try:
+        raw = bytes.fromhex(data.strip())
+        q = _tdx_parse_quote(raw)
+        td = q["td"]
+        mrtd = td["mr_td"].hex()
+        rtmr0 = td["rt_mr0"].hex()
+        rtmr1 = td["rt_mr1"].hex()
+        rtmr2 = td["rt_mr2"].hex()
+    except Exception:
+        return None
+
+    matches = _find_matching_artifacts(mrtd, rtmr0, rtmr1, rtmr2)
+    best = _pick_newest_version(matches)
+    if best is None:
+        return None
+    return {
+        "template_name": best["template_name"],
+        "artifacts_ver": best["artifacts_ver"],
+    }
+
+
+def verify_tdx_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
+    """Verify that a TDX quote was produced by a known SecretVM running the
+    given docker-compose YAML.
+
+    Args:
+        data: Hex-encoded TDX quote.
+        docker_compose_yaml: Contents of the docker-compose.yaml file.
+
+    Returns:
+        WorkloadResult with status "authentic_match", "authentic_mismatch", or
+        "not_authentic".
+    """
+    try:
+        raw = bytes.fromhex(data.strip())
+        q = _tdx_parse_quote(raw)
+        td = q["td"]
+        mrtd = td["mr_td"].hex()
+        rtmr0 = td["rt_mr0"].hex()
+        rtmr1 = td["rt_mr1"].hex()
+        rtmr2 = td["rt_mr2"].hex()
+        quote_rtmr3 = td["rt_mr3"].hex()
+    except Exception:
+        return WorkloadResult(status="not_authentic")
+
+    candidates = _find_matching_artifacts(mrtd, rtmr0, rtmr1, rtmr2)
+    if not candidates:
+        return WorkloadResult(status="not_authentic")
+
+    best = _pick_newest_version(candidates)
+    template_name = best["template_name"]
+    vm_type = best["vm_type"]
+    artifacts_ver = best["artifacts_ver"]
+    # vm_type column in CSV contains the environment (prod/dev)
+    env = vm_type
+
+    for entry in candidates:
+        expected = _calculate_rtmr3(docker_compose_yaml, entry["rootfs_data"])
+        if expected == quote_rtmr3:
+            return WorkloadResult(
+                status="authentic_match",
+                template_name=entry["template_name"],
+                vm_type=entry["vm_type"],
+                artifacts_ver=entry["artifacts_ver"],
+                env=entry["vm_type"],
+            )
+
+    return WorkloadResult(
+        status="authentic_mismatch",
+        template_name=template_name,
+        vm_type=vm_type,
+        artifacts_ver=artifacts_ver,
+        env=env,
+    )
+
+
+def format_workload_result(r: WorkloadResult) -> str:
+    """Human-readable string for a WorkloadResult."""
+    if r.status == "not_authentic":
+        return "\U0001f6ab Attestation doesn't belong to an authentic SecretVM"
+
+    vm_line = (
+        f"\u2705 Confirmed an authentic SecretVM (TDX), "
+        f"vm_type {r.template_name}, artifacts {r.artifacts_ver}, environment {r.env}"
+    )
+    if r.status == "authentic_match":
+        return vm_line + "\n\u2705 Confirmed that the VM is running the specified docker-compose.yaml"
+
+    return vm_line + "\n\U0001f6ab Attestation does not match the specified docker-compose.yaml"

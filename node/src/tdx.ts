@@ -404,3 +404,28 @@ function parseQuote(raw: Buffer) {
     certData,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Exported quote field extractor (no network calls)
+// ---------------------------------------------------------------------------
+
+export interface TdxQuoteFields {
+  mrtd: string;
+  rtmr0: string;
+  rtmr1: string;
+  rtmr2: string;
+  rtmr3: string;
+}
+
+/** Parse a raw TDX quote (hex-encoded) and return measurement fields only. */
+export function parseTdxQuoteFields(data: string): TdxQuoteFields {
+  const raw = Buffer.from(data.trim(), "hex");
+  const q = parseQuote(raw);
+  return {
+    mrtd: q.td.mrTd.toString("hex"),
+    rtmr0: q.td.rtMr0.toString("hex"),
+    rtmr1: q.td.rtMr1.toString("hex"),
+    rtmr2: q.td.rtMr2.toString("hex"),
+    rtmr3: q.td.rtMr3.toString("hex"),
+  };
+}

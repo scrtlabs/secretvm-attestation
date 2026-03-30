@@ -9,6 +9,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **Intel TDX** — Parses a TDX Quote v4, verifies the ECDSA-P256 signature chain (PCK → Intermediate → Root), validates QE report binding, and checks TCB status against Intel's Provisioning Certification Service.
 - **AMD SEV-SNP** — Parses a SEV-SNP attestation report, fetches the VCEK certificate from AMD's Key Distribution Service, verifies the ECDSA-P384 report signature, and validates the certificate chain (VCEK → ASK → ARK).
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
+- **SecretVM workload** — Given a TDX quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image (`resolveSecretVmVersion` / `verifyTdxWorkload`). Looks up the quote's MRTD and RTMR0–2 in a signed registry of official SecretVM builds, then replays the RTMR3 measurement to verify the exact compose file that was booted.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
   - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
@@ -60,6 +61,85 @@ console.log(result.checks);         // { tls_cert_obtained: true, cpu_attestatio
 console.log(result.report);         // { tls_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
 console.log(result.errors);         // [] if no errors
 ```
+
+### Resolve SecretVM version from a TDX quote
+
+Given a TDX quote, determine which official SecretVM template and version produced it:
+
+**Python:**
+
+```python
+from secretvm.verify import resolve_secretvm_version
+
+result = resolve_secretvm_version(open("cpu_quote.txt").read())
+if result:
+    print(result["template_name"])  # e.g. "small"
+    print(result["artifacts_ver"])  # e.g. "v0.0.25"
+else:
+    print("Not a known SecretVM")
+```
+
+**Node.js / TypeScript:**
+
+```typescript
+import { resolveSecretVmVersion } from 'secretvm-verify';
+import { readFileSync } from 'fs';
+
+const result = resolveSecretVmVersion(readFileSync('cpu_quote.txt', 'utf8'));
+if (result) {
+  console.log(result.template_name); // e.g. "small"
+  console.log(result.artifacts_ver); // e.g. "v0.0.25"
+} else {
+  console.log('Not a known SecretVM');
+}
+```
+
+### Verify a TDX workload (quote + docker-compose)
+
+Verify that a TDX quote was produced by a known SecretVM *and* that it was running a specific `docker-compose.yaml`:
+
+**Python:**
+
+```python
+from secretvm.verify import verify_tdx_workload, format_workload_result
+
+result = verify_tdx_workload(
+    open("cpu_quote.txt").read(),
+    open("docker-compose.yaml").read(),
+)
+
+print(result.status)        # "authentic_match" | "authentic_mismatch" | "not_authentic"
+print(result.template_name) # e.g. "small"  (None when not_authentic)
+print(result.artifacts_ver) # e.g. "v0.0.25" (None when not_authentic)
+print(result.env)           # e.g. "prod"    (None when not_authentic)
+print(format_workload_result(result))  # human-readable summary
+```
+
+**Node.js / TypeScript:**
+
+```typescript
+import { verifyTdxWorkload, formatWorkloadResult } from 'secretvm-verify';
+import { readFileSync } from 'fs';
+
+const result = verifyTdxWorkload(
+  readFileSync('cpu_quote.txt', 'utf8'),
+  readFileSync('docker-compose.yaml', 'utf8'),
+);
+
+console.log(result.status);        // "authentic_match" | "authentic_mismatch" | "not_authentic"
+console.log(result.template_name); // e.g. "small"   (undefined when not_authentic)
+console.log(result.artifacts_ver); // e.g. "v0.0.25" (undefined when not_authentic)
+console.log(result.env);           // e.g. "prod"    (undefined when not_authentic)
+console.log(formatWorkloadResult(result)); // human-readable summary
+```
+
+**Status values:**
+
+| Status | Meaning |
+|--------|---------|
+| `authentic_match` | Quote is from a known SecretVM **and** the compose file matches exactly |
+| `authentic_mismatch` | Quote is from a known SecretVM but the compose file does **not** match |
+| `not_authentic` | Quote's MRTD/RTMR values are not in the SecretVM registry |
 
 ### Verify a CPU quote (auto-detect TDX vs SEV-SNP)
 
@@ -159,6 +239,64 @@ Verifies an AMD SEV-SNP attestation report.
 
 ---
 
+#### `resolve_secretvm_version(data)` / `resolveSecretVmVersion(data)`
+
+Looks up a TDX quote in the SecretVM artifact registry. Returns the matching template name and version, or `None` / `null` if the quote does not match any known SecretVM build.
+
+**Parameters:**
+- `data` — Hex-encoded TDX quote
+
+**Returns:** `{ template_name, artifacts_ver }` or `None` / `null`
+
+---
+
+#### `verify_tdx_workload(data, docker_compose_yaml)` / `verifyTdxWorkload(data, dockerComposeYaml)`
+
+Verifies that a TDX quote was produced by a known SecretVM running a specific `docker-compose.yaml`. Replays the RTMR3 measurement from the compose content and compares it to the value in the quote.
+
+**Parameters:**
+- `data` — Hex-encoded TDX quote
+- `docker_compose_yaml` / `dockerComposeYaml` — Contents of the `docker-compose.yaml` file
+
+**Returns:** `WorkloadResult` (Python dataclass / TypeScript interface)
+
+---
+
+#### `format_workload_result(result)` / `formatWorkloadResult(result)`
+
+Formats a `WorkloadResult` as a short, human-readable string with status emoji.
+
+**Example output:**
+
+```
+✅ Confirmed an authentic SecretVM (TDX), vm_type small, artifacts v0.0.25, environment prod
+✅ Confirmed that the VM is running the specified docker-compose.yaml
+```
+
+```
+✅ Confirmed an authentic SecretVM (TDX), vm_type small, artifacts v0.0.25, environment prod
+🚫 Attestation does not match the specified docker-compose.yaml
+```
+
+```
+🚫 Attestation doesn't belong to an authentic SecretVM
+```
+
+---
+
+#### `WorkloadResult`
+
+Python dataclass / TypeScript interface returned by `verify_tdx_workload` / `verifyTdxWorkload`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `WorkloadStatus` | `"authentic_match"`, `"authentic_mismatch"`, or `"not_authentic"` |
+| `template_name` | `str \| None` / `string \| undefined` | SecretVM template (e.g. `"small"`), set when status ≠ `not_authentic` |
+| `artifacts_ver` | `str \| None` / `string \| undefined` | Artifacts version (e.g. `"v0.0.25"`), set when status ≠ `not_authentic` |
+| `env` | `str \| None` / `string \| undefined` | Environment (e.g. `"prod"`), set when status ≠ `not_authentic` |
+
+---
+
 #### `check_nvidia_gpu_attestation(data)` / `checkNvidiaGpuAttestation(data)`
 
 Verifies NVIDIA GPU attestation via NRAS.
@@ -200,8 +338,18 @@ secretvm-verify --gpu gpu_attest.txt
 # Auto-detect CPU quote type (TDX vs SEV-SNP)
 secretvm-verify --cpu cpu_quote.txt
 
-# JSON output
+# Resolve which SecretVM version produced a TDX quote
+secretvm-verify --resolve-version cpu_quote.txt
+# → Template: small, Version: v0.0.25
+
+# Verify a TDX quote + docker-compose match
+secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
+# → ✅ Confirmed an authentic SecretVM (TDX), vm_type small, artifacts v0.0.25, environment prod
+# → ✅ Confirmed that the VM is running the specified docker-compose.yaml
+
+# JSON output (any command)
 secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw
+secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --raw
 
 # A bare URL defaults to --secretvm
 secretvm-verify yellow-krill.vm.scrtlabs.com
@@ -213,14 +361,18 @@ Full usage:
 Usage: secretvm-verify <command> <value> [--product NAME] [--raw]
 
 Commands:
-  --secretvm <url>     Verify a Secret VM (CPU + GPU + TLS binding)
-  --cpu <file>         Verify a CPU quote (auto-detect TDX vs SEV-SNP)
-  --tdx <file>         Verify an Intel TDX quote
-  --sev <file>         Verify an AMD SEV-SNP report
-  --gpu <file>         Verify an NVIDIA GPU attestation
+  --secretvm <url>                        Verify a Secret VM (CPU + GPU + TLS binding)
+  --cpu <file>                            Verify a CPU quote (auto-detect TDX vs SEV-SNP)
+  --tdx <file>                            Verify an Intel TDX quote
+  --sev <file>                            Verify an AMD SEV-SNP report
+  --gpu <file>                            Verify an NVIDIA GPU attestation
+  --resolve-version <file>                Resolve SecretVM version from a TDX quote
+  --verify-workload <file> --compose <file>
+                                          Verify TDX workload against a docker-compose.yaml
 
 Options:
   --product NAME       AMD product name (Genoa, Milan, Turin)
+  --compose <file>     docker-compose.yaml file (required with --verify-workload)
   --raw                Output raw JSON result
 ```
 
@@ -255,7 +407,7 @@ secretvm-verify/
     src/secretvm/verify/
       __init__.py             # All library code
     tests/
-      test_attestation.py     # 34 tests (integration + mocked)
+      test_attestation.py     # 49 tests (integration + mocked; includes workload tests)
     check_vm.py               # CLI tool
   node/                       # npm package
     package.json
@@ -268,11 +420,17 @@ secretvm-verify/
       nvidia.ts               # NVIDIA GPU verification
       cpu.ts                  # Auto-detect TDX vs SEV-SNP
       vm.ts                   # End-to-end Secret VM verification
+      workload.ts             # resolveSecretVmVersion + verifyTdxWorkload
+      artifacts.ts            # SecretVM artifact registry loader
+      rtmr.ts                 # RTMR3 replay from docker-compose
       cli.ts                  # CLI tool
+      workload.test.ts        # Tests for workload / version resolution
   test-data/                  # Shared attestation quote fixtures
     cpu_quote.txt             # Intel TDX quote (hex)
     amd_cpu_quote.txt         # AMD SEV-SNP report (base64)
     gpu_attest.txt            # NVIDIA GPU attestation (JSON)
+    tdx_cpu_docker_check_quote.txt     # TDX quote from a SecretVM with docker-compose
+    tdx_cpu_docker_check_compose.yaml  # Matching docker-compose.yaml for the quote above
 ```
 
 ## Requirements
