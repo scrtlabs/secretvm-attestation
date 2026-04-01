@@ -66,6 +66,16 @@ def main():
             print(f"  Driver: {info.get('driver_version')}")
             print(f"  Secure boot: {info.get('secure_boot')}")
 
+    workload = report.get("workload", {})
+    if workload:
+        print(f"\nWorkload status: {workload.get('status')}")
+        if workload.get("template_name"):
+            print(f"Template: {workload['template_name']}")
+        if workload.get("artifacts_ver"):
+            print(f"Version: {workload['artifacts_ver']}")
+        if workload.get("env"):
+            print(f"Environment: {workload['env']}")
+
     # Errors
     if result.errors:
         print(f"\nErrors:")

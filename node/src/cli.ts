@@ -4,7 +4,7 @@ import {
   checkSecretVm,
   checkCpuAttestation,
   checkTdxCpuAttestation,
-  checkAmdCpuAttestation,
+  checkSevCpuAttestation,
   checkNvidiaGpuAttestation,
   detectCpuQuoteType,
   resolveSecretVmVersion,
@@ -12,6 +12,7 @@ import {
   verifyWorkload,
   formatWorkloadResult,
 } from "./index.js";
+import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
 import type { AttestationResult } from "./types.js";
 
 const args = process.argv.slice(2);
@@ -27,7 +28,7 @@ function getFlagValue(name: string): string | undefined {
 }
 
 function getPositional(): string | undefined {
-  return args.find((a) => !a.startsWith("--") && a !== "-v");
+  return args.find((a) => !a.startsWith("--") && a !== "-v" && a !== "-rv" && a !== "-vw");
 }
 
 const raw = getFlag("--raw");
@@ -42,11 +43,15 @@ Commands:
   --tdx <file>                      Verify an Intel TDX quote
   --sev <file>                      Verify an AMD SEV-SNP report
   --gpu <file>                      Verify an NVIDIA GPU attestation
-  --resolve-version <file>          Resolve SecretVM version from TDX or AMD SEV-SNP quote
-  --verify-workload <file> --compose <file>
+  --resolve-version, -rv <file>     Resolve SecretVM version from TDX or AMD SEV-SNP quote
+  --verify-workload, -vw <file> --compose <file>
                                     Verify TDX or AMD SEV-SNP workload against a docker-compose.yaml
+  --check-agent <id> --chain <name>
+                                    Resolve and verify an ERC-8004 agent on-chain
+  --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
 
 Options:
+  --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
   --raw                Output raw JSON result
   --verbose, -v        Print all attestation report fields
@@ -94,7 +99,7 @@ if (getFlag("--secretvm")) {
     process.exit(1);
   }
   if (!raw) console.log(`Verifying AMD SEV-SNP report from ${file} ...\n`);
-  result = await checkAmdCpuAttestation(readFileSync(file, "utf8"), product);
+  result = await checkSevCpuAttestation(readFileSync(file, "utf8"), product);
 } else if (getFlag("--gpu")) {
   const file = getFlagValue("--gpu") ?? getPositional();
   if (!file) {
@@ -103,8 +108,8 @@ if (getFlag("--secretvm")) {
   }
   if (!raw) console.log(`Verifying NVIDIA GPU attestation from ${file} ...\n`);
   result = await checkNvidiaGpuAttestation(readFileSync(file, "utf8"));
-} else if (getFlag("--resolve-version")) {
-  const file = getFlagValue("--resolve-version") ?? getPositional();
+} else if (getFlag("--resolve-version") || getFlag("-rv")) {
+  const file = getFlagValue("--resolve-version") ?? getFlagValue("-rv") ?? getPositional();
   if (!file) {
     console.log(USAGE);
     process.exit(1);
@@ -113,7 +118,7 @@ if (getFlag("--secretvm")) {
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
-    const quoteResult = await checkAmdCpuAttestation(quoteData, product);
+    const quoteResult = await checkSevCpuAttestation(quoteData, product);
     // Step 2: registry lookup
     const version = resolveAmdSevVersion(quoteData);
     if (raw) {
@@ -152,8 +157,8 @@ if (getFlag("--secretvm")) {
     }
     process.exit(!!version ? 0 : 1);
   }
-} else if (getFlag("--verify-workload")) {
-  const quoteFile = getFlagValue("--verify-workload") ?? getPositional();
+} else if (getFlag("--verify-workload") || getFlag("-vw")) {
+  const quoteFile = getFlagValue("--verify-workload") ?? getFlagValue("-vw") ?? getPositional();
   const composeFile = getFlagValue("--compose");
   if (!quoteFile || !composeFile) {
     console.log(USAGE);
@@ -164,7 +169,7 @@ if (getFlag("--secretvm")) {
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
-    const quoteResult = await checkAmdCpuAttestation(quoteData, product);
+    const quoteResult = await checkSevCpuAttestation(quoteData, product);
     if (raw) {
       const workloadResult = verifyWorkload(quoteData, composeData);
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
@@ -204,6 +209,24 @@ if (getFlag("--secretvm")) {
     console.log(formatWorkloadResult(workloadResult));
     process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
   }
+} else if (getFlag("--check-agent")) {
+  const id = getFlagValue("--check-agent");
+  const chain = getFlagValue("--chain");
+  if (!id || !chain) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (!raw) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
+  result = await checkAgent(Number(id), chain);
+} else if (getFlag("--agent")) {
+  const file = getFlagValue("--agent") ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  const metadata = JSON.parse(readFileSync(file, "utf8"));
+  if (!raw) console.log(`Verifying agent "${metadata.name}" ...\n`);
+  result = await verifyAgent(metadata);
 } else {
   // Legacy: bare URL defaults to --secretvm
   const url = getPositional();

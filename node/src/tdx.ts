@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import { AttestationResult, makeResult } from "./types.js";
 
 const INTEL_PCS_BASE =
-  "https://api.trustedservices.intel.com/sgx/certification/v4";
+    "https://pccs.scrtlabs.com/sgx/certification/v4";
+// "https://api.trustedservices.intel.com/sgx/certification/v4";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   checkTdxCpuAttestation,
-  checkAmdCpuAttestation,
+  checkSevCpuAttestation,
   checkNvidiaGpuAttestation,
   checkCpuAttestation,
   checkSecretVm,
@@ -92,9 +92,9 @@ describe("checkTdxCpuAttestation", () => {
 // AMD SEV-SNP
 // ---------------------------------------------------------------------------
 
-describe("checkAmdCpuAttestation", () => {
+describe("checkSevCpuAttestation", () => {
   it("verifies a valid AMD report", async () => {
-    const result = await checkAmdCpuAttestation(
+    const result = await checkSevCpuAttestation(
       loadFixture("amd_cpu_quote.txt"),
       "Genoa",
     );
@@ -109,7 +109,7 @@ describe("checkAmdCpuAttestation", () => {
   });
 
   it("returns correct report fields", async () => {
-    const result = await checkAmdCpuAttestation(
+    const result = await checkSevCpuAttestation(
       loadFixture("amd_cpu_quote.txt"),
       "Genoa",
     );
@@ -124,7 +124,7 @@ describe("checkAmdCpuAttestation", () => {
   });
 
   it("auto-detects product", async () => {
-    const result = await checkAmdCpuAttestation(
+    const result = await checkSevCpuAttestation(
       loadFixture("amd_cpu_quote.txt"),
     );
     if (skipIfRateLimited(result)) return;
@@ -133,7 +133,7 @@ describe("checkAmdCpuAttestation", () => {
   });
 
   it("rejects invalid base64", async () => {
-    const result = await checkAmdCpuAttestation("!!!not-base64!!!");
+    const result = await checkSevCpuAttestation("!!!not-base64!!!");
     assert.equal(result.valid, false);
     assert.equal(result.checks.report_parsed, false);
     assert.ok(result.errors.length > 0);
@@ -141,18 +141,18 @@ describe("checkAmdCpuAttestation", () => {
 
   it("rejects truncated report", async () => {
     const short = Buffer.alloc(100).toString("base64");
-    const result = await checkAmdCpuAttestation(short);
+    const result = await checkSevCpuAttestation(short);
     assert.equal(result.valid, false);
     assert.equal(result.checks.report_parsed, false);
   });
 
   it("rejects empty input", async () => {
-    const result = await checkAmdCpuAttestation("");
+    const result = await checkSevCpuAttestation("");
     assert.equal(result.valid, false);
   });
 
   it("rejects wrong product", async () => {
-    const result = await checkAmdCpuAttestation(
+    const result = await checkSevCpuAttestation(
       loadFixture("amd_cpu_quote.txt"),
       "Milan",
     );
@@ -168,7 +168,7 @@ describe("checkAmdCpuAttestation", () => {
     );
     const corrupted = Buffer.from(raw);
     corrupted[0x090]! ^= 0xff;
-    const result = await checkAmdCpuAttestation(
+    const result = await checkSevCpuAttestation(
       corrupted.toString("base64"),
       "Genoa",
     );

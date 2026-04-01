@@ -14,7 +14,7 @@ import pytest
 
 from secretvm.verify import (
     AttestationResult,
-    check_amd_cpu_attestation,
+    check_sev_cpu_attestation,
     check_cpu_attestation,
     check_nvidia_gpu_attestation,
     check_secret_vm,
@@ -124,7 +124,7 @@ class TestTdxAttestation:
 
 class TestAmdAttestation:
     def test_valid_report(self, amd_quote):
-        result = check_amd_cpu_attestation(amd_quote, product="Genoa")
+        result = check_sev_cpu_attestation(amd_quote, product="Genoa")
         assert isinstance(result, AttestationResult)
         assert result.attestation_type == "SEV-SNP"
         assert result.valid is True
@@ -135,7 +135,7 @@ class TestAmdAttestation:
         assert result.errors == []
 
     def test_report_fields(self, amd_quote):
-        result = check_amd_cpu_attestation(amd_quote, product="Genoa")
+        result = check_sev_cpu_attestation(amd_quote, product="Genoa")
         if result.checks.get("vcek_fetched") is False and "429" in str(result.errors):
             pytest.skip("AMD KDS rate-limited")
         report = result.report
@@ -148,14 +148,14 @@ class TestAmdAttestation:
         assert len(report["chip_id"]) == 128  # 64 bytes as hex
 
     def test_auto_detect_product(self, amd_quote):
-        result = check_amd_cpu_attestation(amd_quote)
+        result = check_sev_cpu_attestation(amd_quote)
         if result.checks.get("vcek_fetched") is False and "429" in str(result.errors):
             pytest.skip("AMD KDS rate-limited")
         assert result.valid is True
         assert result.report["product"] == "Genoa"
 
     def test_invalid_base64(self):
-        result = check_amd_cpu_attestation("!!!not-base64!!!")
+        result = check_sev_cpu_attestation("!!!not-base64!!!")
         assert result.valid is False
         assert result.checks["report_parsed"] is False
         assert len(result.errors) > 0
@@ -163,16 +163,16 @@ class TestAmdAttestation:
     def test_truncated_report(self):
         import base64
         short = base64.b64encode(b"\x00" * 100).decode()
-        result = check_amd_cpu_attestation(short)
+        result = check_sev_cpu_attestation(short)
         assert result.valid is False
         assert result.checks["report_parsed"] is False
 
     def test_empty_input(self):
-        result = check_amd_cpu_attestation("")
+        result = check_sev_cpu_attestation("")
         assert result.valid is False
 
     def test_wrong_product(self, amd_quote):
-        result = check_amd_cpu_attestation(amd_quote, product="Milan")
+        result = check_sev_cpu_attestation(amd_quote, product="Milan")
         assert result.valid is False
         assert result.checks.get("vcek_fetched") is False
 
@@ -183,7 +183,7 @@ class TestAmdAttestation:
         corrupted = bytearray(raw)
         corrupted[0x090] ^= 0xFF  # corrupt the measurement field
         data = base64.b64encode(corrupted).decode()
-        result = check_amd_cpu_attestation(data, product="Genoa")
+        result = check_sev_cpu_attestation(data, product="Genoa")
         if result.checks.get("vcek_fetched") is False and "429" in str(result.errors):
             pytest.skip("AMD KDS rate-limited")
         assert result.checks["report_signature_valid"] is False
@@ -280,6 +280,8 @@ def _mock_response(text, status_code=200, content_type="text/plain"):
 
 def _make_test_data(tls_hex="aa" * 32, nonce_hex="bb" * 32):
     """Build consistent test data for check_secret_vm tests."""
+    from secretvm.verify import WorkloadResult
+
     report_data = tls_hex + nonce_hex
     tls_fp = bytes.fromhex(tls_hex)
 
@@ -298,8 +300,12 @@ def _make_test_data(tls_hex="aa" * 32, nonce_hex="bb" * 32):
         "error": "GPU attestation not available",
         "details": "The GPU attestation data has not been generated or is not ready yet",
     })
+    workload_pass = WorkloadResult(
+        status="authentic_match", template_name="small",
+        artifacts_ver="v0.0.25", env="prod",
+    )
 
-    return tls_fp, cpu_result, gpu_result, gpu_json, no_gpu_json
+    return tls_fp, cpu_result, gpu_result, gpu_json, no_gpu_json, workload_pass
 
 
 class TestSecretVm:
@@ -323,15 +329,17 @@ class TestSecretVm:
         assert _parse_vm_url("https://myhost") == ("myhost", 29343)
 
     def test_vm_with_gpu_all_pass(self):
-        tls_fp, cpu_result, gpu_result, gpu_json, _ = _make_test_data()
+        tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass = _make_test_data()
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
                 _mock_response(gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
             ]
             result = check_secret_vm("https://test-vm:29343")
 
@@ -344,17 +352,20 @@ class TestSecretVm:
         assert result.checks["gpu_quote_fetched"] is True
         assert result.checks["gpu_attestation_valid"] is True
         assert result.checks["gpu_binding"] is True
+        assert result.checks["workload_verified"] is True
         assert result.errors == []
 
     def test_vm_without_gpu(self):
-        tls_fp, cpu_result, _, _, no_gpu_json = _make_test_data()
+        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass = _make_test_data()
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
                 _mock_response(no_gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
             ]
             result = check_secret_vm("https://test-vm:29343")
 
@@ -363,18 +374,21 @@ class TestSecretVm:
         assert result.checks["gpu_quote_fetched"] is False
         assert "gpu_attestation_valid" not in result.checks
         assert "gpu_binding" not in result.checks
+        assert result.checks["workload_verified"] is True
 
     def test_tls_binding_failure(self):
-        tls_fp, cpu_result, _, _, no_gpu_json = _make_test_data()
+        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass = _make_test_data()
         # Use wrong TLS fingerprint
         wrong_tls = bytes.fromhex("ff" * 32)
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=wrong_tls), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
                 _mock_response(no_gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
             ]
             result = check_secret_vm("https://test-vm:29343")
 
@@ -383,17 +397,19 @@ class TestSecretVm:
         assert any("TLS binding failed" in e for e in result.errors)
 
     def test_gpu_binding_failure(self):
-        tls_fp, cpu_result, gpu_result, _, _ = _make_test_data()
+        tls_fp, cpu_result, gpu_result, _, _, workload_pass = _make_test_data()
         # GPU JSON with wrong nonce
         wrong_gpu_json = json.dumps({"nonce": "dd" * 32, "arch": "HOPPER", "evidence_list": []})
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
                 _mock_response(wrong_gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
             ]
             result = check_secret_vm("https://test-vm:29343")
 
@@ -402,7 +418,7 @@ class TestSecretVm:
         assert any("GPU binding failed" in e for e in result.errors)
 
     def test_cpu_attestation_failure(self):
-        tls_fp, _, _, _, no_gpu_json = _make_test_data()
+        tls_fp, _, _, _, no_gpu_json, workload_pass = _make_test_data()
         bad_cpu = AttestationResult(
             valid=False, attestation_type="TDX",
             checks={"quote_parsed": True, "quote_signature_valid": False},
@@ -412,10 +428,12 @@ class TestSecretVm:
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=bad_cpu), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
                 _mock_response(no_gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
             ]
             result = check_secret_vm("https://test-vm:29343")
 
@@ -423,7 +441,7 @@ class TestSecretVm:
         assert result.checks["cpu_attestation_valid"] is False
 
     def test_gpu_attestation_failure(self):
-        tls_fp, cpu_result, _, gpu_json, _ = _make_test_data()
+        tls_fp, cpu_result, _, gpu_json, _, workload_pass = _make_test_data()
         bad_gpu = AttestationResult(
             valid=False, attestation_type="NVIDIA-GPU",
             checks={"platform_jwt_signature": False},
@@ -434,10 +452,12 @@ class TestSecretVm:
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=bad_gpu), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
                 _mock_response(gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
             ]
             result = check_secret_vm("https://test-vm:29343")
 

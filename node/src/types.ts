@@ -19,3 +19,15 @@ export function makeResult(
     ...overrides,
   };
 }
+
+export interface AgentService {
+  name: string;
+  endpoint: string;
+}
+
+export interface AgentMetadata {
+  name: string;
+  description?: string;
+  supportedTrust: string[];
+  services: AgentService[];
+}

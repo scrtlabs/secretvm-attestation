@@ -248,7 +248,7 @@ function verifyReportSignature(
 // Public
 // ---------------------------------------------------------------------------
 
-export async function checkAmdCpuAttestation(
+export async function checkSevCpuAttestation(
   data: string,
   product = "",
 ): Promise<AttestationResult> {

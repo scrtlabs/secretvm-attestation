@@ -13,6 +13,10 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
   - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
+- **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow (TLS binding, CPU attestation, GPU attestation, and workload verification). Three composable functions:
+  - **`resolveAgent`** — Queries the on-chain registry contract for the agent's metadata (tokenURI -> services, supportedTrust).
+  - **`verifyAgent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
+  - **`checkAgent`** — End-to-end: resolves the agent on-chain, then verifies it. One call does everything.
 
 ## Installation
 
@@ -61,6 +65,38 @@ console.log(result.checks);         // { tls_cert_obtained: true, cpu_attestatio
 console.log(result.report);         // { tls_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
 console.log(result.errors);         // [] if no errors
 ```
+
+### Verify an ERC-8004 agent (Node.js)
+
+Verify an AI agent registered on-chain using the ERC-8004 standard. Supports 18 chains including Ethereum, Base, Arbitrum, and more.
+
+```typescript
+import { checkAgent } from 'secretvm-verify';
+
+// End-to-end: resolve on-chain + verify TEE attestation
+const result = await checkAgent(38114, 'base');
+
+console.log(result.valid);           // true if all checks pass
+console.log(result.attestationType); // "ERC-8004"
+console.log(result.checks);         // { agent_resolved: true, metadata_valid: true, ... }
+```
+
+You can also work with the individual steps:
+
+```typescript
+import { resolveAgent, verifyAgent } from 'secretvm-verify';
+
+// Step 1: Resolve agent metadata from the blockchain
+const metadata = await resolveAgent(38114, 'base');
+console.log(metadata.name);            // Agent name
+console.log(metadata.services);        // [{ name: "teequote", endpoint: "..." }, ...]
+console.log(metadata.supportedTrust);  // ["tee-attestation"]
+
+// Step 2: Verify the agent's TEE attestation
+const result = await verifyAgent(metadata);
+```
+
+**RPC configuration:** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) environment variable to use your own RPC endpoint. Falls back to public RPCs if not set.
 
 ### Resolve SecretVM version from a TDX quote
 
@@ -233,7 +269,7 @@ Verifies an Intel TDX Quote v4.
 
 ---
 
-#### `check_amd_cpu_attestation(data, product="")` / `checkAmdCpuAttestation(data, product?)`
+#### `check_sev_cpu_attestation(data, product="")` / `checkSevCpuAttestation(data, product?)`
 
 Verifies an AMD SEV-SNP attestation report.
 
@@ -374,6 +410,13 @@ secretvm-verify --resolve-version cpu_quote.txt
 secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
 # → ✅ Confirmed an authentic SecretVM (TDX), vm_type small, artifacts v0.0.25, environment prod
 # → ✅ Confirmed that the VM is running the specified docker-compose.yaml
+
+# Verify an ERC-8004 agent on-chain (requires RPC)
+SECRETVM_RPC_BASE="https://..." secretvm-verify --check-agent 38114 --chain base
+secretvm-verify --check-agent 38114 --chain base -v
+
+# Verify an agent from a metadata JSON file
+secretvm-verify --agent metadata.json
 
 # JSON output (any command)
 secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw

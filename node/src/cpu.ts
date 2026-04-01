@@ -1,6 +1,6 @@
 import { AttestationResult, makeResult } from "./types.js";
 import { checkTdxCpuAttestation } from "./tdx.js";
-import { checkAmdCpuAttestation } from "./amd.js";
+import { checkSevCpuAttestation } from "./amd.js";
 
 /**
  * Detect whether the quote is Intel TDX (hex) or AMD SEV-SNP (base64).
@@ -48,7 +48,7 @@ export async function checkCpuAttestation(
     return checkTdxCpuAttestation(data);
   }
   if (quoteType === "SEV-SNP") {
-    return checkAmdCpuAttestation(data, product);
+    return checkSevCpuAttestation(data, product);
   }
 
   return makeResult("unknown", {

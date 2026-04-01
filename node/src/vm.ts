@@ -3,12 +3,35 @@ import tls from "node:tls";
 import { AttestationResult, makeResult } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
+import { verifyWorkload } from "./workload.js";
 
 const SECRET_VM_PORT = 29343;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Extract YAML from an HTML-wrapped response (the VM serves docker-compose inside a &lt;pre&gt; tag with HTML-encoded entities). */
+function extractDockerCompose(raw: string): string {
+  let text = raw.trim();
+  // If wrapped in HTML, extract content from <pre>...</pre>
+  const preMatch = text.match(/<pre>([\s\S]*?)<\/pre>/i);
+  if (preMatch) {
+    text = preMatch[1]!;
+  }
+  // Decode HTML entities
+  text = text
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+  // Strip zero-width spaces and other invisible Unicode characters
+  text = text.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
+  return text;
+}
 
 export function parseVmUrl(url: string): { host: string; port: number } {
   if (!url.includes("://")) url = `https://${url}`;
@@ -166,12 +189,33 @@ export async function checkSecretVm(
     }
   }
 
+  // 6. Fetch and verify workload (docker-compose)
+  try {
+    const resp = await fetch(`${baseUrl}/docker-compose`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const dockerCompose = extractDockerCompose(await resp.text());
+    checks.workload_fetched = true;
+
+    const workloadResult = verifyWorkload(cpuData, dockerCompose);
+    checks.workload_verified = workloadResult.status === "authentic_match";
+    report.workload = workloadResult;
+    if (workloadResult.status === "authentic_mismatch") {
+      errors.push("Workload mismatch: VM is authentic but docker-compose does not match");
+    } else if (workloadResult.status === "not_authentic") {
+      errors.push("Workload verification failed: not an authentic SecretVM");
+    }
+  } catch (e: any) {
+    errors.push(`Failed to fetch workload: ${e.message}`);
+    checks.workload_fetched = false;
+  }
+
   // Overall validity
   const requiredChecks = [
     checks.tls_cert_obtained,
     checks.cpu_quote_fetched,
     checks.cpu_attestation_valid,
     checks.tls_binding,
+    !!checks.workload_verified,
   ];
   if (gpuPresent) {
     requiredChecks.push(!!checks.gpu_attestation_valid);
