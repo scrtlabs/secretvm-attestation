@@ -15,6 +15,7 @@
     "secretvm-verify": "dist/cli.js"
   },
   "scripts": {
+    "prebuild": "cp ../artifacts_registry/tdx.csv data/tdx.csv && cp ../artifacts_registry/sev.json data/sev.json",
     "build": "tsc",
     "test": "node --test dist/**/*.test.js",
     "prepublishOnly": "npm run build"
