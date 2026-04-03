@@ -236,9 +236,10 @@ if (getFlag("--secretvm")) {
     // Step 3: workload (compose hash) verification
     const workloadResult = await verifyWorkload(quoteData, composeData);
     if (workloadResult.status === "authentic_match") {
-      console.log("✅ Confirmed that the VM is running the specified docker-compose.yaml");
+      console.log(`✅ Confirmed that the VM is running the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose`);
     } else {
-      console.log("🚫 Attestation does not match the specified docker-compose.yaml");
+      const src = vmUrl ? `the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose` : "the specified docker-compose.yaml";
+      console.log(`🚫 Attestation does not match ${src}`);
     }
     process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
   } else {
@@ -253,7 +254,7 @@ if (getFlag("--secretvm")) {
       process.exit(1);
     }
     const workloadResult = await verifyWorkload(quoteData, composeData);
-    console.log(formatWorkloadResult(workloadResult));
+    console.log(formatWorkloadResult(workloadResult, vmUrl));
     process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
   }
 } else if (getFlag("--check-agent")) {

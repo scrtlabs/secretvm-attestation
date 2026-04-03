@@ -171,25 +171,21 @@ export async function verifyTdxWorkload(
 // Human-readable output
 // ---------------------------------------------------------------------------
 
-export function formatWorkloadResult(r: WorkloadResult): string {
+export function formatWorkloadResult(r: WorkloadResult, vmUrl?: string): string {
     if (r.status === "not_authentic") {
         return "🚫 Attestation doesn't belong to an authentic SecretVM";
     }
 
     const vmLine = `✅ Confirmed an authentic SecretVM, vm_type ${r.template_name}, artifacts ${r.artifacts_ver}, environment ${r.env}`;
 
+    const source = vmUrl ? `the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose` : "the specified docker-compose.yaml";
+
     if (r.status === "authentic_match") {
-        return (
-            vmLine +
-            "\n✅ Confirmed that the VM is running the specified docker-compose.yaml"
-        );
+        return vmLine + `\n✅ Confirmed that the VM is running ${source}`;
     }
 
     // authentic_mismatch
-    return (
-        vmLine +
-        "\n🚫 Attestation does not match the specified docker-compose.yaml"
-    );
+    return vmLine + `\n🚫 Attestation does not match ${source}`;
 }
 
 // ---------------------------------------------------------------------------
