@@ -27,6 +27,7 @@ class WorkloadResult:
 class AgentService:
     name: str
     endpoint: str
+    description: str = ""
 
 
 @dataclass
@@ -35,3 +36,9 @@ class AgentMetadata:
     supported_trust: list[str]
     services: list[AgentService]
     description: str = ""
+    image: str = ""
+    type: str = ""
+    active: bool = True
+    x402_support: bool = False
+    attributes: dict = field(default_factory=dict)
+    raw: dict = field(default_factory=dict)

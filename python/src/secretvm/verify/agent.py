@@ -100,7 +100,8 @@ def _normalize_agent_services(raw) -> list[AgentService]:
             continue
         name = entry.get("name", "") or f"service-{i + 1}"
         endpoint = entry.get("endpoint", "")
-        result.append(AgentService(name=str(name), endpoint=str(endpoint)))
+        description = entry.get("description", "")
+        result.append(AgentService(name=str(name), endpoint=str(endpoint), description=str(description)))
     return result
 
 
@@ -193,6 +194,12 @@ def resolve_agent(agent_id: int, chain: str) -> AgentMetadata:
         description=description,
         supported_trust=trust if isinstance(trust, list) else [],
         services=_normalize_agent_services(services_raw),
+        image=str(manifest.get("image", "")),
+        type=str(manifest.get("type", "")),
+        active=bool(manifest.get("active", True)),
+        x402_support=bool(manifest.get("x402Support", False)),
+        attributes=manifest.get("attributes", {}),
+        raw=manifest,
     )
 
 

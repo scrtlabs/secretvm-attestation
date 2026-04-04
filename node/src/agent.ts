@@ -23,9 +23,11 @@ function normalizeServices(raw: unknown): AgentService[] {
     const entry = (service ?? {}) as Record<string, unknown>;
     const name = typeof entry.name === "string" ? entry.name : "";
     const endpoint = typeof entry.endpoint === "string" ? entry.endpoint : "";
+    const description = typeof entry.description === "string" ? entry.description : "";
     return {
       name: name || `service-${index + 1}`,
       endpoint,
+      description,
     };
   });
 }
@@ -175,6 +177,12 @@ export async function resolveAgent(
       typeof manifest.description === "string" ? manifest.description : undefined,
     supportedTrust: Array.isArray(trust) ? trust : [],
     services: normalizeServices(manifest.services ?? manifest.endpoints),
+    image: typeof manifest.image === "string" ? manifest.image : undefined,
+    type: typeof manifest.type === "string" ? manifest.type : undefined,
+    active: manifest.active !== undefined ? Boolean(manifest.active) : true,
+    x402Support: Boolean(manifest.x402Support ?? false),
+    attributes: (manifest.attributes as Record<string, any>) ?? {},
+    raw: manifest,
   };
 }
 

@@ -23,6 +23,7 @@ export function makeResult(
 export interface AgentService {
   name: string;
   endpoint: string;
+  description?: string;
 }
 
 export interface AgentMetadata {
@@ -30,4 +31,10 @@ export interface AgentMetadata {
   description?: string;
   supportedTrust: string[];
   services: AgentService[];
+  image?: string;
+  type?: string;
+  active?: boolean;
+  x402Support?: boolean;
+  attributes?: Record<string, any>;
+  raw?: Record<string, any>;
 }
